@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Toss Portfolio Radar
 
 Toss Portfolio Radar는 토스증권 Open API를 이용해 보유 주식을 조회하고, 각 종목의 단기 추세, 변동성, 하락위험 점수를 로컬 Streamlit 화면에 표시하는 조회 전용 포트폴리오 대시보드입니다.
@@ -171,3 +172,7 @@ toss-portfolio-radar/
 - `snapshots.json`에는 평가금액 같은 개인 포트폴리오 정보가 저장될 수 있으므로 Git에 올리지 마세요.
 - API 키와 시크릿을 절대 Git에 올리지 마세요.
 - access token, client secret, 계좌번호 같은 민감정보를 화면이나 로그에 노출하지 않도록 주의하세요.
+=======
+# Toss-Portfolio-Radar
+Toss Portfolio Radar는 토스증권 Open API를 이용해 보유 주식을 조회하고, 각 종목의 단기 추세, 변동성, 하락위험 점수를 로컬 Streamlit 화면에 표시하는 조회 전용 포트폴리오 대시보드 입니다.
+>>>>>>> 5c95b4c9980712797a1d7b2870baaa3a555e74eb
