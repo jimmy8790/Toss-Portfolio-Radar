@@ -15,6 +15,7 @@ def holdings_to_dataframe(holdings: list[dict[str, Any]]) -> pd.DataFrame:
         "averagePurchasePrice",
         "profitLoss.rate",
         "profitLoss.rateBeforeCost",
+        "profitLoss.rateKrw",
         "dailyProfitLoss.rate",
         "evaluationAmount",
         "evaluationAmountBeforeCost",
@@ -22,6 +23,8 @@ def holdings_to_dataframe(holdings: list[dict[str, Any]]) -> pd.DataFrame:
         "marketValue.amount",
         "profitLoss.amount",
         "dailyProfitLoss.amount",
+        "cost.commission",
+        "cost.tax",
     ]
     if not holdings:
         return pd.DataFrame(columns=columns)
@@ -42,6 +45,17 @@ def holdings_to_dataframe(holdings: list[dict[str, Any]]) -> pd.DataFrame:
         normalized,
         ["profitLoss.rateAfterCost", "profitLoss.rate", "profitRate", "returnRate"],
     )
+    df["profitLoss.rateKrw"] = _pick_column(
+        normalized,
+        [
+            "profitLoss.rate.krw",
+            "profitLoss.krw.rate",
+            "profitLoss.rateKrw",
+            "profitLossRateKrw",
+            "krwProfitLoss.rate",
+            "returnRateKrw",
+        ],
+    )
     df["dailyProfitLoss.rate"] = _pick_column(normalized, ["dailyProfitLoss.rate", "dailyProfitRate"])
     df["evaluationAmountBeforeCost"] = _pick_column(
         normalized,
@@ -55,18 +69,23 @@ def holdings_to_dataframe(holdings: list[dict[str, Any]]) -> pd.DataFrame:
     df["marketValue.amount"] = df["evaluationAmount"]
     df["profitLoss.amount"] = _pick_column(normalized, ["profitLoss.amountAfterCost", "profitLoss.amount", "profitLossAmount"])
     df["dailyProfitLoss.amount"] = _pick_column(normalized, ["dailyProfitLoss.amount", "dailyProfitLossAmount"])
+    df["cost.commission"] = _pick_column(normalized, ["cost.commission", "commission", "fee"])
+    df["cost.tax"] = _pick_column(normalized, ["cost.tax", "tax"])
 
     for column in [
         "quantity",
         "averagePurchasePrice",
         "profitLoss.rate",
         "profitLoss.rateBeforeCost",
+        "profitLoss.rateKrw",
         "dailyProfitLoss.rate",
         "evaluationAmount",
         "evaluationAmountBeforeCost",
         "purchaseAmount",
         "profitLoss.amount",
         "dailyProfitLoss.amount",
+        "cost.commission",
+        "cost.tax",
     ]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
 

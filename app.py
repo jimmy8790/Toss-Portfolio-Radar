@@ -414,6 +414,8 @@ def build_display_table(holdings_df: pd.DataFrame) -> pd.DataFrame:
         "lastPrice",
         "averagePurchasePrice",
         "profitLoss.rate",
+        "cost.commission",
+        "cost.tax",
         "dailyProfitLoss.rate",
         "trend_score",
         "volatility_score",
@@ -431,6 +433,11 @@ def build_display_table(holdings_df: pd.DataFrame) -> pd.DataFrame:
         lambda row: format_currency(row.get("averagePurchasePrice"), str(row.get("currency") or "KRW")),
         axis=1,
     )
+    for column in ["cost.commission", "cost.tax"]:
+        table[column] = table.apply(
+            lambda row: format_currency(row.get(column), str(row.get("currency") or "KRW")),
+            axis=1,
+        )
     for column in ["trend_score", "volatility_score", "downside_risk_score"]:
         table[column] = table[column].map(format_score)
     table["profitLoss.rate"] = table["profitLoss.rate"].map(format_percent)
@@ -445,7 +452,9 @@ def build_display_table(holdings_df: pd.DataFrame) -> pd.DataFrame:
             "quantity": "보유수량",
             "lastPrice": "현재가",
             "averagePurchasePrice": "평균매입가",
-            "profitLoss.rate": "총수익률(비용포함)",
+            "profitLoss.rate": "총수익률",
+            "cost.commission": "수수료",
+            "cost.tax": "세금",
             "dailyProfitLoss.rate": "당일손익률",
             "trend_score": "추세점수",
             "volatility_score": "변동성점수",
@@ -490,9 +499,10 @@ def show_exchange_impact(holdings_df: pd.DataFrame, usd_krw: float | None) -> No
     st.caption(
         "USD/KRW 환율은 참고용 표시 환율이며 실제 주문 환율과 다를 수 있습니다. "
         "해외주식 총수익률은 토스 앱의 수수료·세금 포함 기준과 맞추기 위해 OpenAPI의 비용 포함 필드를 우선 사용합니다. "
-        "다만 원화 기준 종목별 총수익률은 현재 보유종목 item 응답에 원화 원금/평가금액이 없어 자동 계산하지 않습니다."
+        "원화 총수익률을 입력하면 달러 총수익률과 비교해 추정 매수환율과 환율 효과를 계산합니다."
     )
 
+    manual_krw_returns = collect_manual_krw_returns(usd_holdings)
     rows = []
     for _, row in usd_holdings.iterrows():
         symbol = str(row.get("symbol", "")).upper()
@@ -500,10 +510,12 @@ def show_exchange_impact(holdings_df: pd.DataFrame, usd_krw: float | None) -> No
         purchase_amount = _to_float(row.get("purchaseAmount"))
         last_price = _to_float(row.get("lastPrice"))
         average_price = _to_float(row.get("averagePurchasePrice"))
-        krw_return = _to_float(row.get("profitLoss.rate"))
+        api_krw_return = _to_float(row.get("profitLoss.rateKrw"))
+        krw_return = api_krw_return if api_krw_return is not None else manual_krw_returns.get(symbol)
         krw_value = usd_value * usd_krw if usd_krw and usd_value is not None else None
         usd_return = _calculate_usd_return(last_price, average_price, usd_value, purchase_amount)
         fx_effect = krw_return - usd_return if krw_return is not None and usd_return is not None else None
+        estimated_purchase_fx = _estimate_purchase_fx(usd_krw, usd_return, krw_return)
         rows.append(
             {
                 "심볼": symbol,
@@ -511,12 +523,30 @@ def show_exchange_impact(holdings_df: pd.DataFrame, usd_krw: float | None) -> No
                 "USD 평가금액": format_currency(usd_value, "USD"),
                 "KRW 환산 평가금액": format_currency(krw_value, "KRW"),
                 "현재 환율": "-" if usd_krw is None else f"{usd_krw:,.2f}",
-                "USD 총수익률(계산)": format_percent(usd_return),
-                "API 총수익률": format_percent(krw_return),
-                "차이": _format_percentage_point(fx_effect),
+                "USD 총수익률": format_percent(usd_return),
+                "원화 총수익률": format_percent(krw_return),
+                "추정 매수환율": "-" if estimated_purchase_fx is None else f"{estimated_purchase_fx:,.2f}",
+                "환율 효과": _format_percentage_point(fx_effect),
             }
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption("추정 매수환율 = 현재 환율 × (1 + USD 총수익률) ÷ (1 + 원화 총수익률). 원화 총수익률이 없으면 계산하지 않습니다.")
+
+
+def collect_manual_krw_returns(usd_holdings: pd.DataFrame) -> dict[str, float]:
+    values: dict[str, float] = {}
+    with st.expander("원화 총수익률 직접 입력", expanded=False):
+        st.caption("토스 앱을 원화(₩) 기준으로 바꾼 뒤 종목별 총 수익률 숫자만 입력하세요. 예: -11.94")
+        for symbol in usd_holdings["symbol"].dropna().astype(str).str.upper().tolist():
+            raw_value = st.text_input(
+                f"{symbol} 원화 총수익률(%)",
+                key=f"krw_return_override_{symbol}",
+                placeholder="예: -11.94",
+            )
+            parsed = _parse_percent_text(raw_value)
+            if parsed is not None:
+                values[symbol] = parsed
+    return values
 
 
 def _calculate_usd_return(
@@ -530,6 +560,20 @@ def _calculate_usd_return(
     if average_price and last_price is not None:
         return last_price / average_price - 1
     return None
+
+
+def _estimate_purchase_fx(
+    current_fx: float | None,
+    usd_return: float | None,
+    krw_return: float | None,
+) -> float | None:
+    if current_fx is None or usd_return is None or krw_return is None:
+        return None
+    denominator = 1 + krw_return
+    if denominator == 0:
+        return None
+    estimated = current_fx * (1 + usd_return) / denominator
+    return estimated if estimated > 0 else None
 
 
 def _format_percentage_point(value: float | None) -> str:
@@ -682,6 +726,13 @@ def show_symbol_detail(
     c2.metric("RSI", "-" if rsi is None else f"{rsi:.2f}", help="상대강도지수. 0~100 범위에서 최근 상승/하락 압력을 보여주는 참고 지표입니다.")
     c3.metric("최근 20일 변동성", format_percent(volatility), help="최근 20일 일간 수익률의 흔들림 정도입니다.")
     c4.metric("최근 20일 최대낙폭", format_percent(max_drawdown), help="최근 20일 고점 대비 가장 크게 밀린 폭입니다.")
+
+    c1, c2, c3 = st.columns(3)
+    currency = str(row.get("currency") or "KRW")
+    total_cost = _sum_optional(row.get("cost.commission"), row.get("cost.tax"))
+    c1.metric("수수료", format_currency(row.get("cost.commission"), currency))
+    c2.metric("세금", format_currency(row.get("cost.tax"), currency))
+    c3.metric("비용 합계", format_currency(total_cost, currency))
 
     show_indicator_glossary()
 
@@ -880,6 +931,24 @@ def _latest(df: pd.DataFrame, column: str) -> float | None:
 def _to_float(value: object) -> float | None:
     parsed = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     return None if pd.isna(parsed) else float(parsed)
+
+
+def _sum_optional(*values: object) -> float | None:
+    numbers = [_to_float(value) for value in values]
+    present = [number for number in numbers if number is not None]
+    if not present:
+        return None
+    return sum(present)
+
+
+def _parse_percent_text(value: str) -> float | None:
+    cleaned = value.strip().replace("%", "").replace(",", "")
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned) / 100
+    except ValueError:
+        return None
 
 
 def _warning_text(item: dict[str, Any]) -> str:
