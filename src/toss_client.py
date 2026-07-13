@@ -88,7 +88,7 @@ class TossInvestClient:
         )
         return accounts
 
-    def get_holdings(self, account_seq: int, symbol: str | None = None) -> list[dict[str, Any]]:
+    def get_holdings_payload(self, account_seq: int, symbol: str | None = None) -> dict[str, Any]:
         params = {"symbol": symbol} if symbol else None
         payload = self._request(
             "GET",
@@ -97,7 +97,14 @@ class TossInvestClient:
             params=params,
             default={},
         )
-        return self._extract_list(
+        return payload if isinstance(payload, dict) else {}
+
+    def get_holdings(self, account_seq: int, symbol: str | None = None) -> list[dict[str, Any]]:
+        return self.extract_holdings_items(self.get_holdings_payload(account_seq, symbol))
+
+    @classmethod
+    def extract_holdings_items(cls, payload: Any) -> list[dict[str, Any]]:
+        return cls._extract_list(
             payload,
             "holdings",
             "holdingList",

@@ -15,6 +15,7 @@ from src.portfolio import (
     add_warning_counts,
     calculate_summary,
     calculate_weights,
+    extract_api_summary,
     holdings_to_dataframe,
     merge_prices,
 )
@@ -156,7 +157,7 @@ def render_dashboard(client: TossInvestClient, account_seq: int) -> None:
         st.error(data["error"])
 
     holdings_df = data["holdings_df"]
-    summary = calculate_summary(holdings_df, data["usd_krw"])
+    summary = calculate_summary(holdings_df, data["usd_krw"], data["api_summary"])
     save_portfolio_snapshot(summary, holdings_df)
     show_summary_cards(summary)
 
@@ -233,7 +234,7 @@ def render_snapshot_page() -> None:
         return
 
     st.plotly_chart(build_snapshot_chart(df, "total_value_krw", "총 평가금액 KRW", "총 평가금액 변화"), use_container_width=True)
-    st.plotly_chart(build_snapshot_chart(df, "total_profit_rate", "누적 손익률", "누적 손익률 변화", percent=True), use_container_width=True)
+    st.plotly_chart(build_snapshot_chart(df, "total_profit_rate", "총수익률", "총수익률 변화", percent=True), use_container_width=True)
     st.plotly_chart(
         build_snapshot_chart(df, "average_downside_risk_score", "평균 하락위험점수", "하락위험 점수 평균 변화"),
         use_container_width=True,
@@ -343,11 +344,14 @@ def _query_int(key: str, default: int, minimum: int, maximum: int) -> int:
 def load_dashboard_data(client: TossInvestClient, account_seq: int) -> dict[str, Any]:
     error = None
     try:
-        holdings = client.get_holdings(account_seq)
+        holdings_payload = client.get_holdings_payload(account_seq)
+        holdings = TossInvestClient.extract_holdings_items(holdings_payload)
     except TossInvestError as exc:
+        holdings_payload = {}
         holdings = []
         error = str(exc)
 
+    api_summary = extract_api_summary(holdings_payload)
     holdings_df = holdings_to_dataframe(holdings)
     prices = client.get_prices(holdings_df["symbol"].dropna().astype(str).tolist()) if not holdings_df.empty else []
     holdings_df = merge_prices(holdings_df, prices)
@@ -376,6 +380,7 @@ def load_dashboard_data(client: TossInvestClient, account_seq: int) -> dict[str,
 
     return {
         "holdings_df": holdings_df,
+        "api_summary": api_summary,
         "usd_krw": usd_krw,
         "warnings": warnings_by_symbol,
         "candles": candles_by_symbol,
@@ -393,7 +398,7 @@ def show_summary_cards(summary: dict[str, float | int | None]) -> None:
     cols[3].metric("당일 손익", format_currency(summary.get("daily_profit_loss"), "KRW"))
 
     cols = st.columns(4)
-    cols[0].metric("누적 손익률", format_percent(summary.get("total_profit_rate")))
+    cols[0].metric("총수익률", format_percent(summary.get("total_profit_rate")))
     cols[1].metric("국내 주식 비중", format_percent(summary.get("korea_stock_weight")))
     cols[2].metric("미국 주식 비중", format_percent(summary.get("us_stock_weight")))
     cols[3].metric("달러 자산 비중", format_percent(summary.get("usd_asset_weight")))
@@ -440,7 +445,7 @@ def build_display_table(holdings_df: pd.DataFrame) -> pd.DataFrame:
             "quantity": "보유수량",
             "lastPrice": "현재가",
             "averagePurchasePrice": "평균매입가",
-            "profitLoss.rate": "누적손익률",
+            "profitLoss.rate": "총수익률(비용포함)",
             "dailyProfitLoss.rate": "당일손익률",
             "trend_score": "추세점수",
             "volatility_score": "변동성점수",
@@ -481,10 +486,11 @@ def show_exchange_impact(holdings_df: pd.DataFrame, usd_krw: float | None) -> No
     if usd_holdings.empty:
         return
 
-    st.markdown("### 환율 영향")
+    st.markdown("### 해외주식 환율 참고")
     st.caption(
         "USD/KRW 환율은 참고용 표시 환율이며 실제 주문 환율과 다를 수 있습니다. "
-        "KRW 기준 수익률은 토스 API의 보유종목 손익률을 사용하고, 매수 환율은 수익률 기반 추정값입니다."
+        "해외주식 총수익률은 토스 앱의 수수료·세금 포함 기준과 맞추기 위해 OpenAPI의 비용 포함 필드를 우선 사용합니다. "
+        "다만 원화 기준 종목별 총수익률은 현재 보유종목 item 응답에 원화 원금/평가금액이 없어 자동 계산하지 않습니다."
     )
 
     rows = []
@@ -498,22 +504,19 @@ def show_exchange_impact(holdings_df: pd.DataFrame, usd_krw: float | None) -> No
         krw_value = usd_value * usd_krw if usd_krw and usd_value is not None else None
         usd_return = _calculate_usd_return(last_price, average_price, usd_value, purchase_amount)
         fx_effect = krw_return - usd_return if krw_return is not None and usd_return is not None else None
-        estimated_purchase_fx = _estimate_purchase_fx(usd_krw, usd_return, krw_return)
         rows.append(
             {
                 "심볼": symbol,
                 "종목명": row.get("name"),
                 "USD 평가금액": format_currency(usd_value, "USD"),
                 "KRW 환산 평가금액": format_currency(krw_value, "KRW"),
-                "추정 매수 환율": "-" if estimated_purchase_fx is None else f"{estimated_purchase_fx:,.2f}",
                 "현재 환율": "-" if usd_krw is None else f"{usd_krw:,.2f}",
-                "USD 기준 수익률": format_percent(usd_return),
-                "KRW 기준 수익률": format_percent(krw_return),
-                "환율 효과": _format_percentage_point(fx_effect),
+                "USD 총수익률(계산)": format_percent(usd_return),
+                "API 총수익률": format_percent(krw_return),
+                "차이": _format_percentage_point(fx_effect),
             }
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption("추정 매수 환율은 현재 환율, USD 기준 수익률, KRW 기준 수익률로 역산한 참고값이며 실제 체결 환율과 다를 수 있습니다.")
 
 
 def _calculate_usd_return(
@@ -522,25 +525,11 @@ def _calculate_usd_return(
     current_amount: float | None,
     purchase_amount: float | None,
 ) -> float | None:
-    if average_price and last_price is not None:
-        return last_price / average_price - 1
     if purchase_amount and current_amount is not None:
         return current_amount / purchase_amount - 1
+    if average_price and last_price is not None:
+        return last_price / average_price - 1
     return None
-
-
-def _estimate_purchase_fx(
-    current_fx: float | None,
-    usd_return: float | None,
-    krw_return: float | None,
-) -> float | None:
-    if current_fx is None or usd_return is None or krw_return is None:
-        return None
-    denominator = 1 + krw_return
-    if denominator == 0:
-        return None
-    estimated = current_fx * (1 + usd_return) / denominator
-    return estimated if estimated > 0 else None
 
 
 def _format_percentage_point(value: float | None) -> str:
@@ -689,7 +678,7 @@ def show_symbol_detail(
     c4.metric("평균 매입가", format_currency(row.get("averagePurchasePrice"), str(row.get("currency") or "KRW")))
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("수익률", format_percent(row.get("profitLoss.rate")))
+    c1.metric("총수익률(비용포함)", format_percent(row.get("profitLoss.rate")))
     c2.metric("RSI", "-" if rsi is None else f"{rsi:.2f}", help="상대강도지수. 0~100 범위에서 최근 상승/하락 압력을 보여주는 참고 지표입니다.")
     c3.metric("최근 20일 변동성", format_percent(volatility), help="최근 20일 일간 수익률의 흔들림 정도입니다.")
     c4.metric("최근 20일 최대낙폭", format_percent(max_drawdown), help="최근 20일 고점 대비 가장 크게 밀린 폭입니다.")
